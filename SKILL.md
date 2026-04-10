@@ -11,7 +11,7 @@ Build native Figma screens from an HTML prototype using Copilot Web components, 
 
 ## CRITICAL RULES — Read Before Anything Else
 
-1. **Component-first, always.** NEVER hand-build a UI element that exists as a Copilot Web component. Every button MUST be a `button` component instance. Every text input MUST be a `text-short` component instance. Every avatar MUST be an `Avatar` component instance. Every loading indicator MUST be a `Spinner` component instance. If you write `figma.createFrame()` for something a library component covers, you are doing it wrong.
+1. **Component-first, always.** NEVER hand-build a UI element that exists as a Copilot Web component. Every button MUST be a `button` component instance. Every form input with a label MUST be a `text field` component instance (NOT `text-short` — see rule 8). Every avatar MUST be an `Avatar` component instance. Every loading indicator MUST be a `Spinner` component instance. If you write `figma.createFrame()` for something a library component covers, you are doing it wrong.
 
 2. **Frame size is sacred.** The default frame size is **1440x900**. This is the Figma frame size — NOT the prototype's internal viewport. The prototype might use 960px or 375px internally, but you scale the layout to fill the Figma frame. Only change frame size if the user explicitly passes `--size`.
 
@@ -24,6 +24,10 @@ Build native Figma screens from an HTML prototype using Copilot Web components, 
 6. **ALL text MUST use Copilot Foundations text styles.** Never create raw text with manual `fontSize`/`fontName`. Every text node must have a `textStyleId` from Copilot Foundations. In Phase 3, discover all text styles (heading, body, label sizes). In Phase 6, apply them: `t.textStyleId = style.id`. The only exception is text inside component instances (buttons, inputs) — those inherit their own styles.
 
 7. **ALL spacing MUST use Copilot Foundations spacing tokens.** Never use hardcoded pixel values for `itemSpacing`, `paddingTop`, `paddingBottom`, `paddingLeft`, `paddingRight`, or gaps. Always bind to a spacing variable: `frame.setBoundVariable("paddingTop", space400)`.
+
+8. **Prefer `text field` over `text-short` for form inputs.** The `text field` component includes a built-in label + input + helper text as a single unit. The `text-short` component is just the raw input with NO label. Default to `text field` for any input that has a label in the prototype. Only use `text-short` when the prototype explicitly shows an input with NO label above it.
+
+9. **Avoid ⚠️-prefixed components.** Components with a ⚠️ prefix are deprecated or in-progress. If both a ⚠️ and non-⚠️ version exist, always use the non-⚠️ version.
 
 ## Arguments
 
@@ -98,6 +102,17 @@ If the argument contains `showroom.mgt.dpty.io`:
 
 **CSS values:** Extract hex colors, font stacks, font sizes/weights, spacing values (padding, margin, gap), border-radius values, gradients.
 
+### Layout Structure Analysis — MANDATORY per screen
+
+For EACH screen, read the actual HTML structure and CSS to record:
+- **Root layout direction:** HORIZONTAL (`flex-direction: row`) or VERTICAL (`flex-direction: column`)
+- **Key structural splits:** e.g., "left panel 420px + right panel flex", or "topbar 56px + content flex"
+- **Navigation style:** sidebar (vertical nav on left/right), topbar (horizontal nav across top), or none — check the actual CSS `flex-direction` and element positioning, do NOT infer from common patterns
+- **Content alignment:** centered, left-aligned, etc.
+- **Fixed-width containers:** note any `max-width` or fixed `width` values on content areas
+
+This analysis MUST be included in the Phase 4 plan per screen. If you get the layout direction wrong (e.g., building a sidebar when the prototype has a topbar), the entire screen will be wrong.
+
 ## Phase 3: Design System Discovery
 
 Search Copilot Web and Copilot Foundations for matches. **Do not hardcode keys.**
@@ -108,16 +123,21 @@ For EVERY interactive UI element type found in Phase 2, search Copilot Web. You 
 
 **Required searches (run ALL of these):**
 - `query: "button"` — for all buttons. Filter to `libraryName: "Copilot Web"`.
-- `query: "text-short"` — for text input fields. Filter to `libraryName: "Copilot Web"`.
+- `query: "text field"` — for labeled form inputs (email, password, username). This is the **preferred** input component — includes label + input + helper as one unit. Filter to `libraryName: "Copilot Web"`.
+- `query: "text-short"` — fallback for inputs WITHOUT labels. Filter to `libraryName: "Copilot Web"`.
 - `query: "text-long"` — for textareas. Filter to `libraryName: "Copilot Web"`.
 - `query: "avatar"` — for avatars/identity circles. Filter to `libraryName: "Copilot Web"`.
 - `query: "spinner loading"` — for loading indicators. Filter to `libraryName: "Copilot Web"`.
 - `query: "banner alert notification"` — for toasts/banners. Filter to `libraryName: "Copilot Web"`.
 - `query: "divider"` — for dividers. Filter to `libraryName: "Copilot Web"`.
 
+**Component selection priority:**
+- If multiple results share a name, prefer the one WITHOUT a ⚠️ or ⛔️ prefix
+- For form inputs: use `text field` (with label) by default, `text-short` (no label) only when the prototype has no label
+
 ### Component Inspection — MANDATORY
 
-After finding component keys, import EACH component set and inspect its variants AND property definitions:
+After finding component keys, import EACH component set and inspect its variants, property definitions, AND full child tree:
 
 ```javascript
 const set = await figma.importComponentSetByKeyAsync(key);
@@ -129,6 +149,35 @@ const defs = set.componentPropertyDefinitions;
 ```
 
 Record the full property key strings (e.g., `"Label#10072:106"`, `"Placeholder#12271:18"`) — you need these exact strings for `setProperties()` in Phase 6.
+
+### Deep Tree Inspection — MANDATORY for form inputs
+
+For `text field` and `text-short`, you MUST create a test instance and inspect the full child tree to understand label/placeholder/helper structure:
+
+```javascript
+const variant = set.children[0];
+const inst = variant.createInstance();
+
+// Toggle ALL boolean properties to true — hidden children may appear
+const boolProps = {};
+for (const [k, v] of Object.entries(inst.componentProperties)) {
+  if (v.type === "BOOLEAN") boolProps[k] = true;
+}
+inst.setProperties(boolProps);
+
+// Walk the full tree
+function getTree(node, depth = 0) {
+  const info = { name: node.name, type: node.type };
+  if (node.type === "TEXT") info.characters = node.characters;
+  if (node.type === "INSTANCE") info.props = node.componentProperties;
+  if ("children" in node) info.children = node.children.map(c => getTree(c, depth + 1));
+  return info;
+}
+const tree = getTree(inst);
+inst.remove();
+```
+
+This reveals the exact node names for label text, placeholder text, and helper text — which you need for Phase 7 overrides.
 
 ### Color Variables
 Search Copilot Foundations for semantic color tokens:
@@ -203,10 +252,15 @@ Found N screens:
 
 Component mapping:
 - Buttons → Copilot Web `button` (key: xxx) — Primary for CTAs, Default for secondary, Text for links
-- Text inputs → Copilot Web `text-short` (key: xxx) — with labels and placeholders
+- Labeled inputs → Copilot Web `text field` (key: xxx) — includes label + input + helper
+- Labelless inputs → Copilot Web `text-short` (key: xxx) — raw input only
 - Avatars → Copilot Web `Avatar` (key: xxx) — Text type for initials
 - Spinners → Copilot Web `Spinner` (key: xxx)
 - [anything not matched] → hand-built with Foundations tokens
+
+Screen layouts:
+1. [Screen name] — [layout: HORIZONTAL/VERTICAL] [nav: topbar/sidebar/none] [key structure]
+2. ...
 
 Color variables: [count] mapped
 Text styles: [count] mapped
@@ -242,7 +296,8 @@ One `use_figma` call per screen. **IMPORTANT:** Every call must re-import tokens
 ```javascript
 // Components — import at the top of EVERY use_figma call
 const buttonSet = await figma.importComponentSetByKeyAsync(BUTTON_KEY);
-const textShortSet = await figma.importComponentSetByKeyAsync(TEXT_SHORT_KEY);
+const textFieldSet = await figma.importComponentSetByKeyAsync(TEXT_FIELD_KEY); // preferred — has label
+const textShortSet = await figma.importComponentSetByKeyAsync(TEXT_SHORT_KEY); // fallback — no label
 const avatarSet = await figma.importComponentSetByKeyAsync(AVATAR_KEY);
 const spinnerComp = await figma.importComponentByKeyAsync(SPINNER_KEY);
 
@@ -290,16 +345,26 @@ function makeButton(parent, label, type = "Primary") {
   return inst;
 }
 
-// Text input — ALWAYS use this for any input field
-// The text-short component includes a built-in label (Header) — USE IT
-function makeInput(parent, { label, placeholder, filled = false } = {}) {
+// Labeled input — use `text field` for any input WITH a label (default)
+function makeTextField(parent, { label, placeholder, filled = false } = {}) {
+  const content = filled ? "Filled" : "Empty";
+  const v = getVariant(textFieldSet, { State: "Default", Content: content });
+  const inst = v.createInstance();
+  parent.appendChild(inst);
+  inst.layoutSizingHorizontal = "FILL";
+  // Set label and placeholder via properties discovered in Phase 3
+  // Use setProperties with the exact keys from deep tree inspection
+  // e.g., inst.setProperties({ "Label#XXXX": label, "Placeholder#XXXX": placeholder });
+  return inst;
+}
+
+// Labelless input — use `text-short` ONLY when there is no label in the prototype
+function makeInput(parent, { placeholder, filled = false } = {}) {
   const content = filled ? "Filled" : "Empty";
   const v = getVariant(textShortSet, { State: "Default", Content: content });
   const inst = v.createInstance();
   parent.appendChild(inst);
   inst.layoutSizingHorizontal = "FILL";
-  // Set placeholder and label via properties discovered in Phase 3
-  // Use setProperties with the exact keys you discovered
   return inst;
 }
 
@@ -410,7 +475,7 @@ frame.clipsContent = true;
 **Key sizing rules:**
 - Root frames: always use the `--size` value (default 1440x900)
 - Buttons: use `layoutSizingHorizontal = "HUG"` by default. Only use `"FILL"` if the button is explicitly full-width in the prototype (e.g., a login form submit button)
-- Text inputs (`text-short`): use `layoutSizingHorizontal = "FILL"` — inputs should fill their container
+- Text inputs (`text field` or `text-short`): use `layoutSizingHorizontal = "FILL"` — inputs should fill their container
 - Layout frames: set sizing based on prototype layout
 - Content containers: constrain `maxWidth` by setting a fixed width on the container, not by stretching children
 
@@ -424,11 +489,39 @@ parent.insertChild(0, svgNode);
 ### Valid counterAxisAlignItems values
 `"MIN"`, `"MAX"`, `"CENTER"`, `"BASELINE"` — NOT "STRETCH"
 
+## Phase 6b: Per-Screen Verification — MANDATORY
+
+After building EACH screen (not at the end — after each one), run a verification `use_figma` call:
+
+```javascript
+const frame = figma.currentPage.findOne(n => n.name === screenName);
+
+// 1. Count component instances against expected
+const instances = frame.findAll(n => n.type === "INSTANCE");
+const buttons = instances.filter(n => Object.keys(n.componentProperties || {}).some(k => k.startsWith("Label#")));
+const textFields = instances.filter(n => /* match text field component */);
+const avatars = instances.filter(n => Object.keys(n.componentProperties || {}).some(k => k.includes("✏️ Label")));
+
+// 2. List all TEXT nodes and verify characters
+const texts = frame.findAll(n => n.type === "TEXT").map(t => t.characters);
+
+// 3. Verify root layout direction matches Phase 2 analysis
+const rootChildren = frame.children;
+// Check layoutMode matches expected (HORIZONTAL vs VERTICAL)
+
+// 4. Report
+return { buttons: buttons.length, textFields: textFields.length, avatars: avatars.length, texts };
+```
+
+**Compare against Phase 2 element inventory.** If any interactive element is missing (e.g., expected 2 inputs but found 1), fix BEFORE moving to the next screen. Do NOT proceed with missing elements — they will not be added later.
+
 ## Phase 7: Fix Component Overrides
 
 **CRITICAL: This MUST be a separate `use_figma` call from Phase 6.**
 
-Component text overrides often do not render visually on the first pass (the property value is set correctly but the text node rendering lags). Run a second pass per screen to force text updates:
+**Component text set via `setProperties()` in Phase 6 does NOT reliably persist across `use_figma` calls.** You MUST re-apply all text overrides in this phase. This is not optional cleanup — it is the primary mechanism for setting component text.
+
+For EACH screen, re-apply ALL text overrides using both `setProperties()` AND direct `.characters` writes on nested text nodes:
 
 ```javascript
 // Load SF Pro — Copilot components use it, not Inter
@@ -484,17 +577,24 @@ After overrides, verify every screen:
 ```javascript
 const frame = figma.currentPage.findOne(n => n.name === screenName);
 const instances = frame.findAll(n => n.type === "INSTANCE");
-const buttons = instances.filter(n => n.componentProperties?.["Label#..."]);
-const inputs = instances.filter(n => /* match text-short */);
-const avatars = instances.filter(n => n.componentProperties?.["✏️ Label#..."]);
+const buttons = instances.filter(n => Object.keys(n.componentProperties || {}).some(k => k.startsWith("Label#")));
+const textFields = instances.filter(n => /* match text field or text-short */);
+const avatars = instances.filter(n => Object.keys(n.componentProperties || {}).some(k => k.includes("✏️ Label")));
 
-// Verify counts match expected
+// Verify counts match expected from Phase 2 inventory
+// Verify text overrides actually took effect
+for (const btn of buttons) {
+  const labelKey = Object.keys(btn.componentProperties).find(k => k.startsWith("Label#"));
+  const val = btn.componentProperties[labelKey]?.value;
+  // If val is still "Button", the override failed — re-apply
+}
+
 // Verify no hand-built frames exist where components should be
 const handBuiltInputs = frame.findAll(n =>
   n.type === "FRAME" && n.name?.includes("Input") && !n.componentProperties
 );
 if (handBuiltInputs.length > 0) {
-  // ERROR: found hand-built inputs — replace with text-short instances
+  // ERROR: found hand-built inputs — replace with text field instances
 }
 ```
 
