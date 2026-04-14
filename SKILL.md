@@ -29,6 +29,10 @@ Build native Figma screens from an HTML prototype using Copilot Web components, 
 
 9. **Avoid ⚠️-prefixed components.** Components with a ⚠️ prefix are deprecated or in-progress. If both a ⚠️ and non-⚠️ version exist, always use the non-⚠️ version.
 
+10. **All text in a screen MUST be created in the initial build call for that screen.** Text nodes created via `textStyleId` in the initial `use_figma` call render correctly. Text created in follow-up repair calls often has 0 width and renders invisible — even with the same font loading and style application. If a screen's text is wrong, rebuild the entire screen or the entire parent section in a single new `use_figma` call rather than trying to patch individual text nodes in a later call. Never delete and recreate text nodes in isolation.
+
+11. **Bind spacing tokens at frame creation, not as a fix-up.** Every `figma.createFrame()` that has padding or itemSpacing MUST have those values bound to tokens immediately — not hardcoded first and fixed later. Use the `makeFrame` helper (see Phase 6 Step 3) which enforces this. After building each screen, run the spacing audit to catch any that slipped through.
+
 ## Arguments
 
 Parse `$ARGUMENTS`:
@@ -89,15 +93,23 @@ If the argument contains `showroom.mgt.dpty.io`:
 **UI elements per screen — categorize:**
 - Headings (h1-h6, large bold text)
 - Body text (paragraphs, descriptions)
-- Buttons (primary CTAs, secondary, SSO/social with icons)
+- Buttons (primary CTAs, secondary, SSO/social with icons) — note size (standard vs large)
+- Icon buttons (overflow/more "···", close "✕", expand/collapse arrows) — these are NOT regular buttons
 - Text inputs (email, password, username fields) — note the label text above each input and placeholder text inside
+- Dropdowns/selects (entity pickers, filters, sort controls) — note if they have chevrons
+- Tabs (horizontal tab bars with active/inactive states)
+- Sidebar nav items (vertical navigation lists with selected states)
 - Links (inline, standalone)
 - Dividers (hr, "or" separators)
 - Identity cards (avatar + name + email)
 - Spinners/loading indicators
+- Progress bars (with labels, counters, step indicators)
 - Success states (checkmarks, confirmation messages)
 - Toast/banner messages
-- Cards/tiles
+- Cards/tiles — note if they're expandable
+- Metric/stat boxes (label + large value pairs, often in grids)
+- Data tables (column headers + rows)
+- Modals/dialogs (overlay + card)
 - Inline SVGs (extract the SVG source for each icon)
 
 **CSS values:** Extract hex colors, font stacks, font sizes/weights, spacing values (padding, margin, gap), border-radius values, gradients.
@@ -122,7 +134,11 @@ Search Copilot Web and Copilot Foundations for matches. **Do not hardcode keys.*
 For EVERY interactive UI element type found in Phase 2, search Copilot Web. You must find a component match or explicitly mark it as "hand-build."
 
 **Required searches (run ALL of these):**
-- `query: "button"` — for all buttons. Filter to `libraryName: "Copilot Web"`.
+- `query: "button"` — for all buttons. Filter to `libraryName: "Copilot Web"`. Also look for `large button` if the prototype has larger CTA buttons.
+- `query: "icon button"` — for icon-only buttons (overflow menus, more/ellipsis, close, etc.). Filter to `libraryName: "Copilot Web"`.
+- `query: "dropdown button"` — for dropdown triggers / select controls. Filter to `libraryName: "Copilot Web"`. Has built-in chevron.
+- `query: "tabs"` — for tab navigation (Upcoming/Previous, etc.). Also search `tab-item` for individual tab items. Filter to `libraryName: "Copilot Web"`.
+- `query: "list-item"` — for sidebar nav items, menu items, selectable rows. Filter to `libraryName: "Copilot Web"`. Has `Type=Single` with `State=Selected/Unselected`.
 - `query: "text field"` — for labeled form inputs (email, password, username). This is the **preferred** input component — includes label + input + helper as one unit. Filter to `libraryName: "Copilot Web"`.
 - `query: "text-short"` — fallback for inputs WITHOUT labels. Filter to `libraryName: "Copilot Web"`.
 - `query: "text-long"` — for textareas. Filter to `libraryName: "Copilot Web"`.
@@ -130,6 +146,7 @@ For EVERY interactive UI element type found in Phase 2, search Copilot Web. You 
 - `query: "spinner loading"` — for loading indicators. Filter to `libraryName: "Copilot Web"`.
 - `query: "banner alert notification"` — for toasts/banners. Filter to `libraryName: "Copilot Web"`.
 - `query: "divider"` — for dividers. Filter to `libraryName: "Copilot Web"`.
+- `query: "navigation"` — for full top navigation bars. Filter to `libraryName: "Copilot Web"`.
 
 **Component selection priority:**
 - If multiple results share a name, prefer the one WITHOUT a ⚠️ or ⛔️ prefix
@@ -252,6 +269,11 @@ Found N screens:
 
 Component mapping:
 - Buttons → Copilot Web `button` (key: xxx) — Primary for CTAs, Default for secondary, Text for links
+- Large buttons → Copilot Web `large button` (key: xxx) — for prominent CTAs (e.g., "Process pay")
+- Icon buttons → Copilot Web `icon button` (key: xxx) — for overflow/more "···", close, expand icons
+- Dropdowns → Copilot Web `dropdown button` (key: xxx) — for select/picker controls with chevron
+- Tabs → Copilot Web `tabs` (key: xxx) — Number of tabs=N variant, contains `tab-item` children
+- Sidebar items → Copilot Web `list-item` (key: xxx) — Type=Single, State=Selected/Unselected
 - Labeled inputs → Copilot Web `text field` (key: xxx) — includes label + input + helper
 - Labelless inputs → Copilot Web `text-short` (key: xxx) — raw input only
 - Avatars → Copilot Web `Avatar` (key: xxx) — Text type for initials
@@ -431,6 +453,33 @@ child.layoutSizingHorizontal = "FILL";  // fails if set before appendChild
 child.layoutSizingVertical = "HUG";
 ```
 
+**`makeFrame` helper — use for ALL layout frames:**
+
+```javascript
+// Map px values to nearest spacing token (build this map in Phase 3)
+const spMap = { 0: sp0, 2: sp050, 4: sp100, 6: sp150, 8: sp200, 12: sp300, 16: sp400, 20: sp500, 24: sp600, 32: sp800, 36: sp900, 40: sp1000 };
+const nearestSp = (px) => spMap[Object.keys(spMap).map(Number).reduce((a, b) => Math.abs(b - px) < Math.abs(a - px) ? b : a)];
+
+function makeFrame(parent, { name, layout = "VERTICAL", pt = 0, pb = 0, pl = 0, pr = 0, gap = 0, fill = null, stroke = null, radius = false } = {}) {
+  const f = figma.createFrame();
+  if (parent) { parent.appendChild(f); f.layoutSizingHorizontal = "FILL"; }
+  if (name) f.name = name;
+  f.layoutMode = layout;
+  f.layoutSizingVertical = "HUG";
+  f.fills = fill ? [figma.variables.setBoundVariableForPaint({ type: "SOLID", color: { r: .5, g: .5, b: .5 } }, "color", fill)] : [];
+  if (stroke) { f.strokes = [figma.variables.setBoundVariableForPaint({ type: "SOLID", color: { r: .5, g: .5, b: .5 } }, "color", stroke)]; f.strokeWeight = 1; }
+  if (pt) f.setBoundVariable("paddingTop", nearestSp(pt));
+  if (pb) f.setBoundVariable("paddingBottom", nearestSp(pb));
+  if (pl) f.setBoundVariable("paddingLeft", nearestSp(pl));
+  if (pr) f.setBoundVariable("paddingRight", nearestSp(pr));
+  if (gap) f.setBoundVariable("itemSpacing", nearestSp(gap));
+  if (radius) for (const c of ["topLeftRadius","topRightRadius","bottomLeftRadius","bottomRightRadius"]) f.setBoundVariable(c, br200);
+  return f;
+}
+```
+
+This helper guarantees ALL padding and spacing values are token-bound from creation. Use it instead of raw `figma.createFrame()` for every layout frame.
+
 **BANNED PATTERNS — never do these:**
 ```javascript
 // ❌ NEVER create spacer frames
@@ -444,6 +493,10 @@ frame.paddingTop = 40; // WRONG — use setBoundVariable
 
 // ❌ NEVER create text without a text style
 t.fontSize = 14; t.fontName = { family: "Inter", style: "Regular" }; // WRONG — use textStyleId
+
+// ❌ NEVER recreate text nodes in follow-up repair calls
+// Text created outside the initial screen build call renders invisible (0 width).
+// If text is wrong, rebuild the entire parent section in one new use_figma call.
 ```
 
 **Instead, control spacing by grouping content into auto-layout frames with different `itemSpacing` tokens.** For example, if a form has 8px between label and input but 16px between input groups, use nested frames:
@@ -489,31 +542,101 @@ parent.insertChild(0, svgNode);
 ### Valid counterAxisAlignItems values
 `"MIN"`, `"MAX"`, `"CENTER"`, `"BASELINE"` — NOT "STRETCH"
 
-## Phase 6b: Per-Screen Verification — MANDATORY
+## Phase 6b: Autonomous Validation Loop — MANDATORY
 
-After building EACH screen (not at the end — after each one), run a verification `use_figma` call:
+After building EACH screen (not at the end — after each one), run a validation loop that self-corrects up to 3 times before escalating to the user.
+
+### Validation checklist
+
+Run a `use_figma` call that checks ALL of the following:
 
 ```javascript
 const frame = figma.currentPage.findOne(n => n.name === screenName);
 
-// 1. Count component instances against expected
+// 1. Component instance count vs Phase 2 inventory
 const instances = frame.findAll(n => n.type === "INSTANCE");
 const buttons = instances.filter(n => Object.keys(n.componentProperties || {}).some(k => k.startsWith("Label#")));
-const textFields = instances.filter(n => /* match text field component */);
+const textFields = instances.filter(n => /* match text field component set ID */);
 const avatars = instances.filter(n => Object.keys(n.componentProperties || {}).some(k => k.includes("✏️ Label")));
+const spinners = instances.filter(n => /* match spinner component */);
 
-// 2. List all TEXT nodes and verify characters
-const texts = frame.findAll(n => n.type === "TEXT").map(t => t.characters);
+// 2. No hand-built elements where components should exist
+const handBuiltInputs = frame.findAll(n =>
+  n.type === "FRAME" && (n.name?.toLowerCase().includes("input") || n.name?.toLowerCase().includes("field")) && !n.componentProperties
+);
 
-// 3. Verify root layout direction matches Phase 2 analysis
-const rootChildren = frame.children;
-// Check layoutMode matches expected (HORIZONTAL vs VERTICAL)
+// 3. No hardcoded spacing (itemSpacing or padding set without variable binding)
+const framesWithHardcodedSpacing = frame.findAll(n =>
+  n.type === "FRAME" && n.layoutMode !== "NONE" && n.itemSpacing > 0 && !n.boundVariables?.itemSpacing
+);
 
-// 4. Report
-return { buttons: buttons.length, textFields: textFields.length, avatars: avatars.length, texts };
+// 4. No raw text without text styles
+const rawText = frame.findAll(n => n.type === "TEXT" && !n.textStyleId);
+
+// 5. Layout direction matches Phase 2 analysis
+const rootLayoutMode = frame.layoutMode;
+
+// 6. All text nodes have content (no empty strings, no default placeholder text)
+const defaultText = frame.findAll(n =>
+  n.type === "TEXT" && (n.characters === "" || n.characters === "Label" || n.characters === "Button" || n.characters === "Text")
+);
+
+return {
+  buttons: { expected: N, found: buttons.length },
+  textFields: { expected: N, found: textFields.length },
+  avatars: { expected: N, found: avatars.length },
+  spinners: { expected: N, found: spinners.length },
+  handBuiltInputs: handBuiltInputs.length,
+  hardcodedSpacing: framesWithHardcodedSpacing.length,
+  rawTextWithoutStyles: rawText.length,
+  defaultTextNodes: defaultText.map(n => ({ name: n.name, text: n.characters })),
+  layoutMode: rootLayoutMode,
+};
 ```
 
-**Compare against Phase 2 element inventory.** If any interactive element is missing (e.g., expected 2 inputs but found 1), fix BEFORE moving to the next screen. Do NOT proceed with missing elements — they will not be added later.
+Replace `N` with the expected counts from your Phase 2 element inventory for this screen.
+
+### Self-correction loop
+
+```
+attempt = 1
+MAX_ATTEMPTS = 3
+
+while validation fails AND attempt <= MAX_ATTEMPTS:
+    1. Read the validation result
+    2. For EACH failure type, fix in a new use_figma call:
+       - Missing component instances → create and insert them at the correct position
+       - Hand-built elements → delete and replace with proper component instances
+       - Hardcoded spacing → bind to nearest Copilot Foundations spacing token
+       - Raw text without styles → apply nearest matching Copilot Foundations text style
+       - Default text content → apply correct text from Phase 2 element inventory
+       - Wrong layout direction → rebuild the root frame structure
+    3. Re-run the validation checklist
+    4. attempt += 1
+
+if validation PASSES:
+    Log: "Screen [name] validated — [buttons] buttons, [inputs] inputs, [avatars] avatars, 0 issues."
+    Proceed to next screen.
+
+if validation still fails after 3 attempts:
+    STOP and report to user:
+    "Screen [name] failed validation after 3 attempts. Remaining issues:
+    - [list each failing check with current vs expected values]
+    Want me to continue with the next screen or fix these manually?"
+    Wait for user response before proceeding.
+```
+
+### Pass criteria
+
+A screen PASSES validation when ALL of these are true:
+- Component instance counts match Phase 2 inventory (buttons, inputs, avatars, spinners)
+- Zero hand-built elements where components should exist
+- Zero hardcoded spacing values (all bound to tokens)
+- Zero raw text nodes without text styles (excluding text inside component instances)
+- Zero default/placeholder text content ("Label", "Button", "Text", or empty string)
+- Root layout direction matches Phase 2 analysis
+
+**Do NOT proceed to the next screen until the current screen passes or you've exhausted 3 attempts and reported to the user.**
 
 ## Phase 7: Fix Component Overrides
 
@@ -613,7 +736,6 @@ Built N screens on page "Page Name":
 ## What This Skill Does NOT Do
 
 - No prototyping/interaction wiring
-- No navigation components (user adds manually)
 - No external image downloads (placeholder rectangles for hosted images)
 - No modification of existing Figma content (creates new frames on a new page only)
 - No `mcp__figma__*` tools (WebSocket community plugin) — only official `mcp__figma-api__*`
